@@ -1,0 +1,8 @@
+README.md
+main.py
+pyproject.toml
+stratosphere_webhook.egg-info/PKG-INFO
+stratosphere_webhook.egg-info/SOURCES.txt
+stratosphere_webhook.egg-info/dependency_links.txt
+stratosphere_webhook.egg-info/requires.txt
+stratosphere_webhook.egg-info/top_level.txt
