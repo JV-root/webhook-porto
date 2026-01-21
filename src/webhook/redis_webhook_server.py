@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import json
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException, Body
 from redis import Redis
@@ -68,7 +68,6 @@ async def tech4_webhook_open(
 
     to = body.get("to") or "unknown"
 
-    # Enriquecimento mínimo (opcional, mas útil)
     stored_payload = {
         "received_at": utc_now_iso(),
         "payload": body,
@@ -76,40 +75,37 @@ async def tech4_webhook_open(
 
     key = k_to_messages(to)
 
-    # Adiciona no final da lista
+    # Adiciona ao histórico
     redis.rpush(key, json.dumps(stored_payload))
 
-    # Garante TTL
+    # TTL e limite
     redis.expire(key, REDIS_TTL_SECONDS)
-
-    # Limita tamanho da lista (evita crescimento infinito)
     redis.ltrim(key, -MAX_MESSAGES_PER_TO, -1)
 
     return {
         "status": "stored",
         "to": to,
-        "total_retained": redis.llen(key),
         "ttl_seconds": REDIS_TTL_SECONDS,
     }
 
 # ======================================================================
-# Latest – retorna TODOS os payloads para o "to"
+# Latest – retorna APENAS o último payload
 # ======================================================================
 @router.get(
     "/messages/{to}/latest",
-    summary="Retorna os payloads recebidos para o destino 'to'",
+    summary="Retorna o último payload recebido para o destino 'to'",
 )
-async def get_messages_by_to(to: str):
+async def get_latest_by_to(to: str):
     key = k_to_messages(to)
-    messages: List[str] = redis.lrange(key, 0, -1)
 
-    if not messages:
+    message = redis.lindex(key, -1)
+    if not message:
         raise HTTPException(
             status_code=404,
-            detail="No payloads found for this 'to'",
+            detail="No payload found for this 'to'",
         )
 
-    return [json.loads(m) for m in messages]
+    return json.loads(message)
 
 # ======================================================================
 # Delete – limpa histórico do "to"
