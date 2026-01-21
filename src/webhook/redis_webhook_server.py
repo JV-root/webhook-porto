@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Body
 from redis import Redis
 
 # ======================================================================
@@ -28,10 +28,6 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def k_event(event_id: str) -> str:
-    return f"tech4:event:{event_id}"
-
-
 def k_session(session_id: str) -> str:
     return f"tech4:session:{session_id}"
 
@@ -48,29 +44,28 @@ async def redis_health():
     }
 
 # ======================================================================
-# Webhook – TOTALMENTE ABERTO
+# Webhook – TOTALMENTE ABERTO (Swagger com body genérico)
 # ======================================================================
 @router.post(
     "/webhooks/tech4",
     summary="Webhook genérico (aceita qualquer payload e persiste bruto)",
 )
-async def tech4_webhook_open(request: Request):
-    # --------------------------------------------------------------
-    # 1. Ler body cru (qualquer JSON)
-    # --------------------------------------------------------------
-    try:
-        body: Dict[str, Any] = await request.json()
-    except Exception:
-        # Mesmo se não for JSON válido, não quebrar
-        body = {"_raw_body": await request.body()}
+async def tech4_webhook_open(
+    payload: Any = Body(
+        ...,
+        description="Payload genérico (qualquer JSON será aceito)",
+        example={
+            "qualquer": "estrutura",
+            "pode": {
+                "ser": ["o", "que", "você", "quiser"]
+            }
+        },
+    ),
+):
+    body: Dict[str, Any] = payload if isinstance(payload, dict) else {"payload": payload}
 
     # --------------------------------------------------------------
-    # 2. Definir session_id
-    #    Prioridade:
-    #    - body.data.service.id
-    #    - body.session_id
-    #    - body.id
-    #    - fallback fixo
+    # Definir session_id de forma flexível
     # --------------------------------------------------------------
     session_id = (
         ((body.get("data") or {}).get("service") or {}).get("id")
@@ -80,9 +75,9 @@ async def tech4_webhook_open(request: Request):
     )
 
     # --------------------------------------------------------------
-    # 3. Persistir payload exatamente como recebido
+    # Persistir payload exatamente como recebido
     # --------------------------------------------------------------
-    payload = {
+    data_to_store = {
         "session_id": session_id,
         "received_at": utc_now_iso(),
         "payload": body,
@@ -91,7 +86,7 @@ async def tech4_webhook_open(request: Request):
     redis.setex(
         k_session(session_id),
         REDIS_TTL_SECONDS,
-        json.dumps(payload),
+        json.dumps(data_to_store),
     )
 
     return {
