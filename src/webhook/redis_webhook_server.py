@@ -23,15 +23,19 @@ redis = Redis.from_url(REDIS_URL, decode_responses=True)
 router = APIRouter(prefix="/redis", tags=["Redis"])
 
 # ======================================================================
-# Models – CloudEvents (mesmo payload do legado)
+# Models – CloudEvents (payload ajustado)
 # ======================================================================
+class Service(BaseModel):
+    id: str
+
+
 class MessageData(BaseModel):
     id: str
     type: str
     createdAt: str
     sentAt: str
     by: str
-    serviceId: str
+    service: Service
     text: Optional[str] = None
 
 
@@ -42,9 +46,8 @@ class CloudEventMessage(BaseModel):
     source: str
     subject: str
     time: str
-    datacontenttype: str
+    datacontenttype: Optional[str] = None
     data: MessageData
-
 
 # ======================================================================
 # Helpers
@@ -60,7 +63,6 @@ def k_event(event_id: str) -> str:
 def k_session(service_id: str) -> str:
     return f"tech4:session:{service_id}"
 
-
 # ======================================================================
 # Ops
 # ======================================================================
@@ -73,12 +75,15 @@ async def redis_health():
         "redis_url": REDIS_URL,
     }
 
-
 # ======================================================================
 # Webhook – Redis
 # ======================================================================
-@router.post("/webhooks/tech4", summary="Recebe mensagens e persiste no Redis (TTL + idempotência)")
+@router.post(
+    "/webhooks/tech4",
+    summary="Recebe mensagens e persiste no Redis (TTL + idempotência)",
+)
 async def tech4_webhook_redis(event: CloudEventMessage):
+    # Aceita apenas eventos de mensagem
     if event.type != "amber.service:conversation:message":
         return {"status": "ignored", "reason": "unsupported type"}
 
@@ -88,42 +93,67 @@ async def tech4_webhook_redis(event: CloudEventMessage):
 
     redis.setex(k_event(event.id), REDIS_TTL_SECONDS, "1")
 
+    # Aceita apenas mensagens de texto
     if event.data.type != "text":
         return {"status": "ignored", "reason": "unsupported data.type"}
 
-    service_id = event.data.serviceId
+    service_id = event.data.service.id
 
     payload = {
-        "service_id": service_id,
-        "event_id": event.id,
-        "message_id": event.data.id,
+        "serviceId": service_id,
+        "eventId": event.id,
+        "messageId": event.data.id,
         "text": event.data.text or "",
         "by": event.data.by,
-        "created_at": event.data.createdAt,
-        "sent_at": event.data.sentAt,
-        "received_at": utc_now_iso(),
+        "createdAt": event.data.createdAt,
+        "sentAt": event.data.sentAt,
+        "receivedAt": utc_now_iso(),
         "raw": event.model_dump(),
     }
 
-    redis.setex(k_session(service_id), REDIS_TTL_SECONDS, json.dumps(payload))
+    redis.setex(
+        k_session(service_id),
+        REDIS_TTL_SECONDS,
+        json.dumps(payload),
+    )
 
-    return {"status": "stored", "backend": "redis", "service_id": service_id, "ttl_seconds": REDIS_TTL_SECONDS}
-
+    return {
+        "status": "stored",
+        "backend": "redis",
+        "serviceId": service_id,
+        "ttl_seconds": REDIS_TTL_SECONDS,
+    }
 
 # ======================================================================
 # Sessions – Redis
 # ======================================================================
-@router.get("/sessions/{service_id}/latest", summary="Última mensagem da conversa (Redis)")
+@router.get(
+    "/sessions/{service_id}/latest",
+    summary="Última mensagem da conversa (Redis)",
+)
 async def get_latest_session_redis(service_id: str):
     data = redis.get(k_session(service_id))
     if not data:
-        raise HTTPException(status_code=404, detail="No messages found for this serviceId (Redis)")
+        raise HTTPException(
+            status_code=404,
+            detail="No messages found for this serviceId (Redis)",
+        )
     return json.loads(data)
 
 
-@router.delete("/sessions/{service_id}", summary="Remove conversa do Redis")
+@router.delete(
+    "/sessions/{service_id}",
+    summary="Remove conversa do Redis",
+)
 async def delete_session_redis(service_id: str):
     deleted = redis.delete(k_session(service_id))
     if deleted:
-        return {"status": "deleted", "backend": "redis", "service_id": service_id}
-    raise HTTPException(status_code=404, detail="serviceId not found (Redis)")
+        return {
+            "status": "deleted",
+            "backend": "redis",
+            "serviceId": service_id,
+        }
+    raise HTTPException(
+        status_code=404,
+        detail="serviceId not found (Redis)",
+    )
