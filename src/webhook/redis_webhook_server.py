@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import json
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException, Body
 from redis import Redis
@@ -13,6 +13,7 @@ from redis import Redis
 # ======================================================================
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 REDIS_TTL_SECONDS = int(os.getenv("REDIS_TTL_SECONDS", "86400"))  # 1 dia
+MAX_MESSAGES_PER_TO = int(os.getenv("MAX_MESSAGES_PER_TO", "1000"))
 
 redis = Redis.from_url(REDIS_URL, decode_responses=True)
 
@@ -28,8 +29,8 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def k_to(to: str) -> str:
-    return f"tech4:to:{to}"
+def k_to_messages(to: str) -> str:
+    return f"tech4:to:{to}:messages"
 
 # ======================================================================
 # Ops
@@ -40,15 +41,16 @@ async def redis_health():
         "status": "up",
         "now_utc": utc_now_iso(),
         "ttl_seconds": REDIS_TTL_SECONDS,
+        "max_messages_per_to": MAX_MESSAGES_PER_TO,
         "redis_url": REDIS_URL,
     }
 
 # ======================================================================
-# Webhook – ingestão aberta (correlação por "to")
+# Webhook – ingestão aberta (histórico por "to")
 # ======================================================================
 @router.post(
     "/webhooks/tech4/862001453668864/messages",
-    summary="Webhook genérico (aceita qualquer payload, correlação por campo 'to')",
+    summary="Webhook genérico (aceita qualquer payload, histórico por campo 'to')",
 )
 async def tech4_webhook_open(
     payload: Any = Body(
@@ -62,56 +64,62 @@ async def tech4_webhook_open(
         },
     ),
 ):
-    # Garante que sempre trabalhamos com dict
     body: Dict[str, Any] = payload if isinstance(payload, dict) else {"payload": payload}
 
-    # --------------------------------------------------------------
-    # Nova chave de correlação: campo "to"
-    # --------------------------------------------------------------
     to = body.get("to") or "unknown"
 
-    # --------------------------------------------------------------
-    # Persistir payload exatamente como recebido
-    # --------------------------------------------------------------
-    redis.setex(
-        k_to(to),
-        REDIS_TTL_SECONDS,
-        json.dumps(body),
-    )
+    # Enriquecimento mínimo (opcional, mas útil)
+    stored_payload = {
+        "received_at": utc_now_iso(),
+        "payload": body,
+    }
+
+    key = k_to_messages(to)
+
+    # Adiciona no final da lista
+    redis.rpush(key, json.dumps(stored_payload))
+
+    # Garante TTL
+    redis.expire(key, REDIS_TTL_SECONDS)
+
+    # Limita tamanho da lista (evita crescimento infinito)
+    redis.ltrim(key, -MAX_MESSAGES_PER_TO, -1)
 
     return {
         "status": "stored",
         "to": to,
+        "total_retained": redis.llen(key),
         "ttl_seconds": REDIS_TTL_SECONDS,
     }
 
 # ======================================================================
-# Latest – leitura alinhada ao campo "to"
+# Latest – retorna TODOS os payloads para o "to"
 # ======================================================================
 @router.get(
     "/messages/{to}/latest",
-    summary="Retorna o último payload recebido para o destino 'to'",
+    summary="Retorna os payloads recebidos para o destino 'to'",
 )
-async def get_latest_by_to(to: str):
-    data = redis.get(k_to(to))
-    if not data:
+async def get_messages_by_to(to: str):
+    key = k_to_messages(to)
+    messages: List[str] = redis.lrange(key, 0, -1)
+
+    if not messages:
         raise HTTPException(
             status_code=404,
-            detail="No payload found for this 'to'",
+            detail="No payloads found for this 'to'",
         )
 
-    # Retorna exatamente o payload salvo
-    return json.loads(data)
+    return [json.loads(m) for m in messages]
 
 # ======================================================================
-# Delete – limpeza por "to"
+# Delete – limpa histórico do "to"
 # ======================================================================
 @router.delete(
     "/messages/{to}",
-    summary="Remove payload associado ao destino 'to'",
+    summary="Remove histórico associado ao destino 'to'",
 )
 async def delete_by_to(to: str):
-    deleted = redis.delete(k_to(to))
+    deleted = redis.delete(k_to_messages(to))
     if deleted:
         return {
             "status": "deleted",
