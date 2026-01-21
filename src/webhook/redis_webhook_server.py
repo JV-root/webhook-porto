@@ -28,8 +28,8 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def k_session(session_id: str) -> str:
-    return f"tech4:session:{session_id}"
+def k_to(to: str) -> str:
+    return f"tech4:to:{to}"
 
 # ======================================================================
 # Ops
@@ -44,20 +44,20 @@ async def redis_health():
     }
 
 # ======================================================================
-# Webhook – TOTALMENTE ABERTO (path ajustado)
+# Webhook – usando "to" como chave de correlação
 # ======================================================================
 @router.post(
     "/webhooks/tech4/862001453668864/messages",
-    summary="Webhook genérico (aceita qualquer payload e persiste bruto)",
+    summary="Webhook genérico (correlação por campo 'to')",
 )
 async def tech4_webhook_open(
     payload: Any = Body(
         ...,
-        description="Payload genérico (qualquer JSON será aceito)",
+        description="Payload genérico (qualquer JSON será aceito, campo 'to' usado como chave)",
         example={
-            "qualquer": "estrutura",
-            "pode": {
-                "ser": ["o", "que", "você", "quiser"]
+            "to": "5511999999999",
+            "message": {
+                "text": "Olá!"
             }
         },
     ),
@@ -65,66 +65,55 @@ async def tech4_webhook_open(
     body: Dict[str, Any] = payload if isinstance(payload, dict) else {"payload": payload}
 
     # --------------------------------------------------------------
-    # Definir session_id de forma flexível
+    # Extrair campo "to" (nova chave de correlação)
     # --------------------------------------------------------------
-    session_id = (
-        ((body.get("data") or {}).get("service") or {}).get("id")
-        or body.get("session_id")
-        or body.get("id")
-        or "default"
-    )
+    to = body.get("to") or "unknown"
 
     # --------------------------------------------------------------
     # Persistir payload exatamente como recebido
     # --------------------------------------------------------------
-    data_to_store = {
-        "session_id": session_id,
-        "received_at": utc_now_iso(),
-        "payload": body,
-    }
-
     redis.setex(
-        k_session(session_id),
+        k_to(to),
         REDIS_TTL_SECONDS,
-        json.dumps(data_to_store),
+        json.dumps(body),
     )
 
     return {
         "status": "stored",
-        "session_id": session_id,
+        "to": to,
         "ttl_seconds": REDIS_TTL_SECONDS,
     }
 
 # ======================================================================
-# Sessions – Redis
+# Latest – agora baseado em "to"
 # ======================================================================
 @router.get(
-    "/sessions/{session_id}/latest",
-    summary="Retorna o último payload recebido (bruto)",
+    "/messages/{to}/latest",
+    summary="Retorna o último payload recebido para o destino 'to'",
 )
-async def get_latest_session_redis(session_id: str):
-    data = redis.get(k_session(session_id))
+async def get_latest_by_to(to: str):
+    data = redis.get(k_to(to))
     if not data:
         raise HTTPException(
             status_code=404,
-            detail="No payload found for this session_id",
+            detail="No payload found for this 'to'",
         )
     return json.loads(data)
 
 
 @router.delete(
-    "/sessions/{session_id}",
-    summary="Remove sessão do Redis",
+    "/messages/{to}",
+    summary="Remove histórico do destino 'to'",
 )
-async def delete_session_redis(session_id: str):
-    deleted = redis.delete(k_session(session_id))
+async def delete_by_to(to: str):
+    deleted = redis.delete(k_to(to))
     if deleted:
         return {
             "status": "deleted",
             "backend": "redis",
-            "session_id": session_id,
+            "to": to,
         }
     raise HTTPException(
         status_code=404,
-        detail="session_id not found",
+        detail="'to' not found",
     )
