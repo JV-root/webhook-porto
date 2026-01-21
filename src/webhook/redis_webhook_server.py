@@ -3,10 +3,9 @@ from __future__ import annotations
 import os
 import json
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Dict
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Request
 from redis import Redis
 
 # ======================================================================
@@ -18,36 +17,9 @@ REDIS_TTL_SECONDS = int(os.getenv("REDIS_TTL_SECONDS", "86400"))  # 1 dia
 redis = Redis.from_url(REDIS_URL, decode_responses=True)
 
 # ======================================================================
-# Router (somente endpoints Redis)
+# Router
 # ======================================================================
 router = APIRouter(prefix="/redis", tags=["Redis"])
-
-# ======================================================================
-# Models – CloudEvents (payload ajustado)
-# ======================================================================
-class Service(BaseModel):
-    id: str
-
-
-class MessageData(BaseModel):
-    id: str
-    type: str
-    createdAt: str
-    sentAt: str
-    by: str
-    service: Service
-    text: Optional[str] = None
-
-
-class CloudEventMessage(BaseModel):
-    specversion: str
-    id: str
-    type: str
-    source: str
-    subject: str
-    time: str
-    datacontenttype: Optional[str] = None
-    data: MessageData
 
 # ======================================================================
 # Helpers
@@ -60,8 +32,8 @@ def k_event(event_id: str) -> str:
     return f"tech4:event:{event_id}"
 
 
-def k_session(service_id: str) -> str:
-    return f"tech4:session:{service_id}"
+def k_session(session_id: str) -> str:
+    return f"tech4:session:{session_id}"
 
 # ======================================================================
 # Ops
@@ -76,51 +48,55 @@ async def redis_health():
     }
 
 # ======================================================================
-# Webhook – Redis
+# Webhook – TOTALMENTE ABERTO
 # ======================================================================
 @router.post(
     "/webhooks/tech4",
-    summary="Recebe mensagens e persiste no Redis (TTL + idempotência)",
+    summary="Webhook genérico (aceita qualquer payload e persiste bruto)",
 )
-async def tech4_webhook_redis(event: CloudEventMessage):
-    # Aceita apenas eventos de mensagem
-    if event.type != "amber.service:conversation:message":
-        return {"status": "ignored", "reason": "unsupported type"}
+async def tech4_webhook_open(request: Request):
+    # --------------------------------------------------------------
+    # 1. Ler body cru (qualquer JSON)
+    # --------------------------------------------------------------
+    try:
+        body: Dict[str, Any] = await request.json()
+    except Exception:
+        # Mesmo se não for JSON válido, não quebrar
+        body = {"_raw_body": await request.body()}
 
-    # Idempotência via Redis
-    if redis.exists(k_event(event.id)):
-        return {"status": "ignored", "reason": "duplicate event"}
+    # --------------------------------------------------------------
+    # 2. Definir session_id
+    #    Prioridade:
+    #    - body.data.service.id
+    #    - body.session_id
+    #    - body.id
+    #    - fallback fixo
+    # --------------------------------------------------------------
+    session_id = (
+        ((body.get("data") or {}).get("service") or {}).get("id")
+        or body.get("session_id")
+        or body.get("id")
+        or "default"
+    )
 
-    redis.setex(k_event(event.id), REDIS_TTL_SECONDS, "1")
-
-    # Aceita apenas mensagens de texto
-    if event.data.type != "text":
-        return {"status": "ignored", "reason": "unsupported data.type"}
-
-    service_id = event.data.service.id
-
+    # --------------------------------------------------------------
+    # 3. Persistir payload exatamente como recebido
+    # --------------------------------------------------------------
     payload = {
-        "serviceId": service_id,
-        "eventId": event.id,
-        "messageId": event.data.id,
-        "text": event.data.text or "",
-        "by": event.data.by,
-        "createdAt": event.data.createdAt,
-        "sentAt": event.data.sentAt,
-        "receivedAt": utc_now_iso(),
-        "raw": event.model_dump(),
+        "session_id": session_id,
+        "received_at": utc_now_iso(),
+        "payload": body,
     }
 
     redis.setex(
-        k_session(service_id),
+        k_session(session_id),
         REDIS_TTL_SECONDS,
         json.dumps(payload),
     )
 
     return {
         "status": "stored",
-        "backend": "redis",
-        "serviceId": service_id,
+        "session_id": session_id,
         "ttl_seconds": REDIS_TTL_SECONDS,
     }
 
@@ -128,32 +104,32 @@ async def tech4_webhook_redis(event: CloudEventMessage):
 # Sessions – Redis
 # ======================================================================
 @router.get(
-    "/sessions/{service_id}/latest",
-    summary="Última mensagem da conversa (Redis)",
+    "/sessions/{session_id}/latest",
+    summary="Retorna o último payload recebido (bruto)",
 )
-async def get_latest_session_redis(service_id: str):
-    data = redis.get(k_session(service_id))
+async def get_latest_session_redis(session_id: str):
+    data = redis.get(k_session(session_id))
     if not data:
         raise HTTPException(
             status_code=404,
-            detail="No messages found for this serviceId (Redis)",
+            detail="No payload found for this session_id",
         )
     return json.loads(data)
 
 
 @router.delete(
-    "/sessions/{service_id}",
-    summary="Remove conversa do Redis",
+    "/sessions/{session_id}",
+    summary="Remove sessão do Redis",
 )
-async def delete_session_redis(service_id: str):
-    deleted = redis.delete(k_session(service_id))
+async def delete_session_redis(session_id: str):
+    deleted = redis.delete(k_session(session_id))
     if deleted:
         return {
             "status": "deleted",
             "backend": "redis",
-            "serviceId": service_id,
+            "session_id": session_id,
         }
     raise HTTPException(
         status_code=404,
-        detail="serviceId not found (Redis)",
+        detail="session_id not found",
     )
