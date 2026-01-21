@@ -44,16 +44,16 @@ async def redis_health():
     }
 
 # ======================================================================
-# Webhook – usando "to" como chave de correlação
+# Webhook – ingestão aberta (correlação por "to")
 # ======================================================================
 @router.post(
     "/webhooks/tech4/862001453668864/messages",
-    summary="Webhook genérico (correlação por campo 'to')",
+    summary="Webhook genérico (aceita qualquer payload, correlação por campo 'to')",
 )
 async def tech4_webhook_open(
     payload: Any = Body(
         ...,
-        description="Payload genérico (qualquer JSON será aceito, campo 'to' usado como chave)",
+        description="Payload genérico (qualquer JSON será aceito; campo 'to' usado como chave)",
         example={
             "to": "5511999999999",
             "message": {
@@ -62,10 +62,11 @@ async def tech4_webhook_open(
         },
     ),
 ):
+    # Garante que sempre trabalhamos com dict
     body: Dict[str, Any] = payload if isinstance(payload, dict) else {"payload": payload}
 
     # --------------------------------------------------------------
-    # Extrair campo "to" (nova chave de correlação)
+    # Nova chave de correlação: campo "to"
     # --------------------------------------------------------------
     to = body.get("to") or "unknown"
 
@@ -85,7 +86,7 @@ async def tech4_webhook_open(
     }
 
 # ======================================================================
-# Latest – agora baseado em "to"
+# Latest – leitura alinhada ao campo "to"
 # ======================================================================
 @router.get(
     "/messages/{to}/latest",
@@ -98,12 +99,16 @@ async def get_latest_by_to(to: str):
             status_code=404,
             detail="No payload found for this 'to'",
         )
+
+    # Retorna exatamente o payload salvo
     return json.loads(data)
 
-
+# ======================================================================
+# Delete – limpeza por "to"
+# ======================================================================
 @router.delete(
     "/messages/{to}",
-    summary="Remove histórico do destino 'to'",
+    summary="Remove payload associado ao destino 'to'",
 )
 async def delete_by_to(to: str):
     deleted = redis.delete(k_to(to))
