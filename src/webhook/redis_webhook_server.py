@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict
 
-from fastapi import APIRouter, HTTPException, Request, Body
+from fastapi import APIRouter, HTTPException, Body
 from redis import Redis
 
 # ======================================================================
@@ -44,10 +44,10 @@ async def redis_health():
     }
 
 # ======================================================================
-# Webhook – TOTALMENTE ABERTO (Swagger com body genérico)
+# Webhook – TOTALMENTE ABERTO (path ajustado)
 # ======================================================================
 @router.post(
-    "/webhooks/tech4",
+    "/webhooks/tech4/862001453668864/messages",
     summary="Webhook genérico (aceita qualquer payload e persiste bruto)",
 )
 async def tech4_webhook_open(
