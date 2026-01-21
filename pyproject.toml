@@ -9,5 +9,6 @@ dependencies = [
     "fastapi-pagination>=0.15.6",
     "pydantic[email]>=2.12.5",
     "uvicorn>=0.40.0",
-    "requests>=2.32.3"
+    "requests>=2.32.3",
+    "redis>=7.1.0",
 ]
