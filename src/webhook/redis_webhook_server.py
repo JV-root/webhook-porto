@@ -12,7 +12,7 @@ from redis import Redis
 # ======================================================================
 # Config Redis
 # ======================================================================
-REDIS_URL = os.getenv("REDIS_URL", "redis://stratosphere.yaman.com.br:6379/0")
+REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 REDIS_TTL_SECONDS = int(os.getenv("REDIS_TTL_SECONDS", "86400"))  # 1 dia
 
 redis = Redis.from_url(REDIS_URL, decode_responses=True)
